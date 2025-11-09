@@ -54,6 +54,7 @@
       <button id="btnVerifyHash">Verify</button>
       <button id="btnProof2">Download proof.json</button>
       <button id="btnOpen2" title="Open via first working gateway">Open file</button>
+      <button id="btnShare">Copy shareable link</button>
     </div>
     <div id="verifyResult2"></div>
     <div id="verifyDetails2" class="hint"></div>
@@ -588,6 +589,39 @@
       }
     });
 
+    // ========= Auto Verify + Share Link Feature =========
+
+    // Copy a shareable verification link
+    document.getElementById("btnShare")?.addEventListener("click", async () => {
+      const h = document.getElementById("hashIn")?.value?.trim();
+      if (!h || !h.startsWith("0x") || h.length !== 66) {
+        alert("Enter a valid certificate hash first!");
+        return;
+      }
+      const shareUrl = `${window.location.origin}${window.location.pathname}?hash=${h}`;
+      await navigator.clipboard.writeText(shareUrl);
+      alert("Shareable link copied to clipboard!");
+    });
+
+    // Get query parameter (used to auto-verify)
+    function getQueryParam(name) {
+      const params = new URLSearchParams(window.location.search);
+      return params.get(name);
+    }
+
+    // Auto-verify if ?hash= is present in the URL
+    async function autoVerifyFromQuery() {
+      const hash = getQueryParam("hash");
+      if (hash && hash.startsWith("0x") && hash.length === 66) {
+        const input = document.getElementById("hashIn");
+        if (input) input.value = hash;
+        // Wait a short moment for the DOM to fully initialize
+        setTimeout(() => document.getElementById("btnVerifyHash")?.click(), 1000);
+      }
+    }
+
+    // Run on page load
+    await autoVerifyFromQuery();
 
 
     // Show which address the UI is using (debug)
