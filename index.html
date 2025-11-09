@@ -16,11 +16,14 @@
     code { background: #f7f7f7; padding: 2px 6px; border-radius: 6px; }
     .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
     .hint { color: #666; font-size: 0.92rem; }
+    .badge { display:inline-block; padding:4px 8px; border-radius:6px; color:#fff; font-weight:700; }
+    .badge.valid { background:#198754; }
+    .badge.revoked { background:#dc3545; }
   </style>
 </head>
 <body>
   <h1>Certificate Registry — Verify & Register</h1>
-  <p class="hint">Network: use <strong>Hardhat localhost</strong> (or switch to Sepolia later). Open this file directly in your browser.</p>
+  <p class="hint">Network: <strong>Sepolia</strong>. Connect MetaMask and verify/register/revoke on the live contract.</p>
 
   <div class="card">
     <h3>1) Connect Wallet</h3>
@@ -288,17 +291,25 @@
         lastCid = cid; // store for "Open file" button
 
         if (cid) {
+          const statusBadge = revoked
+            ? `<span class="badge revoked">Revoked</span>`
+            : `<span class="badge valid">Valid</span>`;
+
+          const issuerLink = `<a href="https://sepolia.etherscan.io/address/${issuer}" target="_blank">${issuer}</a>`;
+          const revByLink  = revokedBy ? `<a href="https://sepolia.etherscan.io/address/${revokedBy}" target="_blank">${revokedBy}</a>` : "";
+
+          setHtml(verifyResult, statusBadge);
+
           setHtml(verifyDetails,
             `CID: <code>${cid}</code><br/>` +
             `Open: ${gatewayLinksHTML(cid)}<br/>` +
-            `Timestamp: <code>${new Date(Number(ts) * 1000).toLocaleString()}</code><br/>` +
-            `Issuer: <code>${issuer}</code><br/>` +
-            `Revoked: <code>${revoked}</code>` +
+            `Registered at: <code>${new Date(Number(ts) * 1000).toLocaleString()}</code><br/>` +
+            `Issuer: ${issuerLink}<br/>` +
             (revoked
-              ? `<br/>RevokedAt: <code>${new Date(Number(revokedAt) * 1000).toLocaleString()}</code>` +
-                `<br/>RevokedBy: <code>${revokedBy}</code>` : "")
+              ? `RevokedAt: <code>${new Date(Number(revokedAt) * 1000).toLocaleString()}</code><br/>` +
+                `RevokedBy: ${revByLink}`
+              : "")
           );
-          if (revoked) setHtml(verifyResult, `<span class="bad">✖ Not valid (revoked)</span>`);
         }
       } catch (e) {
         setHtml(verifyResult, `<span class="bad">${e.shortMessage || e.message || String(e)}</span>`);
@@ -336,17 +347,25 @@
         lastCid = cid; // store for "Open file" button
 
         if (cid) {
+          const statusBadge = revoked
+            ? `<span class="badge revoked">Revoked</span>`
+            : `<span class="badge valid">Valid</span>`;
+
+          const issuerLink = `<a href="https://sepolia.etherscan.io/address/${issuer}" target="_blank">${issuer}</a>`;
+          const revByLink  = revokedBy ? `<a href="https://sepolia.etherscan.io/address/${revokedBy}" target="_blank">${revokedBy}</a>` : "";
+
+          setHtml(verifyResult2, statusBadge);
+
           setHtml(verifyDetails2,
             `CID: <code>${cid}</code><br/>` +
             `Open: ${gatewayLinksHTML(cid)}<br/>` +
-            `Timestamp: <code>${new Date(Number(ts) * 1000).toLocaleString()}</code><br/>` +
-            `Issuer: <code>${issuer}</code><br/>` +
-            `Revoked: <code>${revoked}</code>` +
+            `Registered at: <code>${new Date(Number(ts) * 1000).toLocaleString()}</code><br/>` +
+            `Issuer: ${issuerLink}<br/>` +
             (revoked
-              ? `<br/>RevokedAt: <code>${new Date(Number(revokedAt) * 1000).toLocaleString()}</code>` +
-                `<br/>RevokedBy: <code>${revokedBy}</code>` : "")
+              ? `RevokedAt: <code>${new Date(Number(revokedAt) * 1000).toLocaleString()}</code><br/>` +
+                `RevokedBy: ${revByLink}`
+              : "")
           );
-          if (revoked) setHtml(verifyResult2, `<span class="bad">✖ Not valid (revoked)</span>`);
         }
       } catch (e) {
         setHtml(verifyResult2, `<span class="bad">${e.shortMessage || e.message || String(e)}</span>`);
