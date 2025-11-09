@@ -1,0 +1,601 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Certificate Verifier</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; max-width: 800px; margin: 24px auto; padding: 0 16px; }
+    h1 { margin-bottom: 8px; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 16px; margin: 16px 0; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input[type="text"] { width: 100%; max-width: 520px; padding: 8px; }
+    button { padding: 8px 12px; border-radius: 8px; border: 1px solid #aaa; cursor: pointer; }
+    .ok { color: #0a7a28; font-weight: 600; }
+    .bad { color: #b00020; font-weight: 600; }
+    code { background: #f7f7f7; padding: 2px 6px; border-radius: 6px; }
+    .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+    .hint { color: #666; font-size: 0.92rem; }
+  </style>
+</head>
+<body>
+  <h1>Certificate Registry — Verify & Register</h1>
+  <p class="hint">Network: use <strong>Hardhat localhost</strong> (or switch to Sepolia later). Open this file directly in your browser.</p>
+
+  <div class="card">
+    <h3>1) Connect Wallet</h3>
+    <div class="row">
+      <button id="btnConnect">Connect MetaMask</button>
+      <span id="acct" class="mono"></span>
+    </div>
+    <div class="row">
+      <button id="btnNetwork">Add/Switch to Localhost (127.0.0.1:8545)</button>
+      <span id="net" class="mono"></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>2) Verify by Uploading PDF</h3>
+    <input type="file" id="fileInput" accept=".pdf" />
+    <div class="row" style="margin-top:8px;">
+      <button id="btnHash">Compute & Verify</button>
+      <span id="hashOut" class="mono"></span>
+      <button id="btnProof1" title="Download proof for the last computed hash">Download proof.json</button>
+      <button id="btnOpen1" title="Open via first working gateway">Open file</button>
+    </div>
+    <div id="verifyResult"></div>
+    <div id="verifyDetails" class="hint"></div>
+  </div>
+
+  <div class="card">
+    <h3>3) Verify by Hash</h3>
+    <div class="row">
+      <input id="hashIn" type="text" placeholder="0x… (bytes32 hash)" />
+      <button id="btnVerifyHash">Verify</button>
+      <button id="btnProof2">Download proof.json</button>
+      <button id="btnOpen2" title="Open via first working gateway">Open file</button>
+    </div>
+    <div id="verifyResult2"></div>
+    <div id="verifyDetails2" class="hint"></div>
+  </div>
+
+  <div class="card">
+    <h3>4) (Owner Only) Register certificate</h3>
+    <p class="hint">Use only if your connected account is the owner (deployer). Hash must be a <code>bytes32</code> (0x… 64 hex chars). IPFS should be like <code>ipfs://CID</code>.</p>
+    <div class="row">
+      <input id="regHash" type="text" placeholder="0x… (bytes32)" />
+      <input id="regCid" type="text" placeholder="ipfs://bafy…" />
+      <button id="btnRegister">Register</button>
+    </div>
+    <div id="regResult"></div>
+  </div>
+
+  <div class="card">
+    <h3>5) (Owner/Issuer) Revoke certificate</h3>
+    <div class="row">
+      <input id="revHash" type="text" placeholder="0x… (bytes32)" />
+      <button id="btnRevoke">Revoke</button>
+    </div>
+    <div id="revResult"></div>
+  </div>
+
+  <div class="card">
+    <h3>6) (Owner/Issuer) Re-issue a revoked certificate</h3>
+    <div class="row">
+      <input id="reHash" type="text" placeholder="0x… (bytes32 hash)" />
+      <input id="reCid" type="text" placeholder="ipfs://CID (new)" />
+      <button id="btnReissue">Re-issue</button>
+    </div>
+    <div id="reResult"></div>
+  </div>
+
+
+  <div class="card">
+    <h3>Recent on-chain activity</h3>
+    <div class="row" style="gap:12px;">
+      <button id="btnLoadEvents">Load last 50 events</button>
+    </div>
+    <div id="eventsList" class="mono" style="white-space:pre-wrap"></div>
+  </div>
+
+  <div class="card">
+    <h3>Manage issuers (owner)</h3>
+    <div class="row">
+      <input id="issuerAddr" type="text" placeholder="0x... address" />
+      <select id="issuerFlag">
+        <option value="true">Authorize</option>
+        <option value="false">Remove</option>
+      </select>
+      <button id="btnSetIssuer">Update</button>
+    </div>
+    <div id="issuerResult"></div>
+  </div>
+
+
+
+
+    <!-- Ethers (global UMD so console can use `ethers`) -->
+  <script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+
+  <script type="module">
+    // ========= CONFIG (V3) =========
+    const CONTRACT_ADDRESS = "0x47BB76cbce31170099793e235e54523A540A9f5b"; // <-- paste your V3 address here
+    const abi = await fetch("./CertificateRegistry.abi.json?ts=" + Date.now()).then(r => r.json());
+
+    // ========= Helpers =========
+    const $ = (id) => document.getElementById(id);
+
+    let provider, signer, contract, selectedAccount;
+    let lastCid = null;
+
+    async function ensureProvider() {
+      if (!window.ethereum) throw new Error("MetaMask not found");
+      provider = new ethers.BrowserProvider(window.ethereum);
+      return provider;
+    }
+
+    async function getReadContract() {
+      if (!provider) await ensureProvider();
+      return new ethers.Contract(CONTRACT_ADDRESS, abi, provider);
+    }
+
+    async function getWriteContract() {
+      if (!provider) await ensureProvider();
+      signer = await provider.getSigner();
+      return new ethers.Contract(CONTRACT_ADDRESS, abi, signer);
+    }
+
+    function toHex(buf) {
+      return "0x" + [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+    }
+
+    async function sha256File(file) {
+      const buf = await file.arrayBuffer();
+      const hashBuf = await crypto.subtle.digest("SHA-256", buf);
+      return toHex(hashBuf);
+    }
+
+    function linkFromCid(cidOrUri) {
+      let cid = String(cidOrUri || "");
+      if (cid.startsWith("ipfs://")) cid = cid.slice(7);
+      return `https://ipfs.io/ipfs/${cid}`;
+    }
+
+    function setHtml(el, html) { if (el) el.innerHTML = html; }
+
+    // Gateways to try (order matters)
+    const GATEWAYS = [
+      (cid) => `https://ipfs.io/ipfs/${cid}`,
+      (cid) => `https://gateway.pinata.cloud/ipfs/${cid}`,
+      (cid) => `https://cloudflare-ipfs.com/ipfs/${cid}`,
+      (cid) => `https://dweb.link/ipfs/${cid}`,
+    ];
+
+    function extractCid(cidOrUri) {
+      let cid = String(cidOrUri || "");
+      if (cid.startsWith("ipfs://")) cid = cid.slice(7);
+      return cid;
+    }
+
+    function gatewayLinksHTML(cidOrUri) {
+      const cid = extractCid(cidOrUri);
+      const links = GATEWAYS.map(f => f(cid));
+      return links.map((u, i) => `<a href="${u}" target="_blank">Gateway ${i+1}</a>`).join(" • ");
+    }
+
+    // (optional) open first working gateway in a new tab
+    async function openFirstWorking(cidOrUri) {
+      const cid = extractCid(cidOrUri);
+      for (const f of GATEWAYS) {
+        const url = f(cid);
+        try {
+          // lightweight probe; some gateways block HEAD—fallback to fetch without CORS checks
+          const res = await fetch(url, { method: "HEAD", mode: "no-cors" });
+          // Even with no-cors we can't read status, so just open the first tried.
+          window.open(url, "_blank");
+          return;
+        } catch (_) {
+          // try next
+        }
+      }
+      alert("Could not open via common gateways. Try again later.");
+    }
+
+
+
+    // ========= UI elements =========
+    const acctEl = $("acct");
+    const netEl = $("net");
+
+    const hashOut = $("hashOut");
+    const verifyResult = $("verifyResult");
+    const verifyDetails = $("verifyDetails");
+
+    const verifyResult2 = $("verifyResult2");
+    const verifyDetails2 = $("verifyDetails2");
+
+    const regResult = $("regResult");
+    const revResult = $("revResult");
+
+    // ========= Connect wallet =========
+    $("btnConnect")?.addEventListener("click", async () => {
+      try {
+        await ensureProvider();
+        const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+        selectedAccount = accounts[0];
+        acctEl.textContent = "Connected: " + selectedAccount;
+
+        const net = await provider.getNetwork();
+
+        const EXPECTED_CHAIN = 11155111; // sepolia
+        if (Number(net.chainId) !== EXPECTED_CHAIN) {
+          throw new Error(`Wrong network. Switch MetaMask to Sepolia (11155111).`);
+        }
+
+
+        netEl.textContent = `ChainId: ${Number(net.chainId)} (${net.name})`;
+
+        // sanity: confirm contract code exists
+        const code = await provider.getCode(CONTRACT_ADDRESS);
+        if (code === "0x") throw new Error(`No contract code at ${CONTRACT_ADDRESS} on this network`);
+      } catch (e) {
+        acctEl.textContent = e.message || String(e);
+      }
+    });
+
+    // Add/switch to Localhost (optional helper)
+    $("btnNetwork")?.addEventListener("click", async () => {
+      if (!window.ethereum) return alert("MetaMask not found");
+      try {
+        await window.ethereum.request({
+          method: "wallet_addEthereumChain",
+          params: [{
+            chainId: "0x7A69", // 31337
+            chainName: "Hardhat Localhost 8545",
+            nativeCurrency: { name: "ETH", symbol: "ETH", decimals: 18 },
+            rpcUrls: ["http://127.0.0.1:8545"]
+          }]
+        });
+      } catch (e) {
+        alert(e.message || String(e));
+      }
+    });
+
+    // ========= Verify by Uploading PDF =========
+    $("btnHash")?.addEventListener("click", async () => {
+      setHtml(verifyResult, "");
+      setHtml(verifyDetails, "");
+
+      const file = $("fileInput")?.files?.[0];
+      if (!file) return alert("Choose a PDF first.");
+
+      try {
+        const h = await sha256File(file);
+        if (hashOut) hashOut.textContent = h;
+
+        const c = await getReadContract();
+        const ok = await c.verifyCertificate(h);
+
+        setHtml(verifyResult, ok
+          ? `<span class="ok">✔ Registered on chain</span>`
+          : `<span class="bad">✖ Not valid</span>`);
+
+        // V3 returns: [cid, ts, issuer, revoked, revokedAt, revokedBy]
+        const [cid, ts, issuer, revoked, revokedAt, revokedBy] = await c.getCertificate(h)
+          .catch(() => [null, 0, null, false, 0, null]);
+
+        lastCid = cid; // store for "Open file" button
+
+        if (cid) {
+          setHtml(verifyDetails,
+            `CID: <code>${cid}</code><br/>` +
+            `Open: ${gatewayLinksHTML(cid)}<br/>` +
+            `Timestamp: <code>${new Date(Number(ts) * 1000).toLocaleString()}</code><br/>` +
+            `Issuer: <code>${issuer}</code><br/>` +
+            `Revoked: <code>${revoked}</code>` +
+            (revoked
+              ? `<br/>RevokedAt: <code>${new Date(Number(revokedAt) * 1000).toLocaleString()}</code>` +
+                `<br/>RevokedBy: <code>${revokedBy}</code>` : "")
+          );
+          if (revoked) setHtml(verifyResult, `<span class="bad">✖ Not valid (revoked)</span>`);
+        }
+      } catch (e) {
+        setHtml(verifyResult, `<span class="bad">${e.shortMessage || e.message || String(e)}</span>`);
+      }
+    });
+
+    // For "Verify by Uploading PDF"
+    document.getElementById("btnOpen1")?.addEventListener("click", async () => {
+      if (!lastCid) return alert("Verify a certificate first.");
+      openFirstWorking(lastCid);
+    });
+
+
+
+
+    // ========= Verify by Hash =========
+    $("btnVerifyHash")?.addEventListener("click", async () => {
+      setHtml(verifyResult2, "");
+      setHtml(verifyDetails2, "");
+
+      const h = $("hashIn")?.value?.trim();
+      if (!h || !h.startsWith("0x") || h.length !== 66) return alert("Enter a valid bytes32 (0x + 64 hex)");
+
+      try {
+        const c = await getReadContract();
+        const ok = await c.verifyCertificate(h);
+
+        setHtml(verifyResult2, ok
+          ? `<span class="ok">✔ Registered on chain</span>`
+          : `<span class="bad">✖ Not valid</span>`);
+
+        const [cid, ts, issuer, revoked, revokedAt, revokedBy] = await c.getCertificate(h)
+          .catch(() => [null, 0, null, false, 0, null]);
+
+        lastCid = cid; // store for "Open file" button
+
+        if (cid) {
+          setHtml(verifyDetails2,
+            `CID: <code>${cid}</code><br/>` +
+            `Open: ${gatewayLinksHTML(cid)}<br/>` +
+            `Timestamp: <code>${new Date(Number(ts) * 1000).toLocaleString()}</code><br/>` +
+            `Issuer: <code>${issuer}</code><br/>` +
+            `Revoked: <code>${revoked}</code>` +
+            (revoked
+              ? `<br/>RevokedAt: <code>${new Date(Number(revokedAt) * 1000).toLocaleString()}</code>` +
+                `<br/>RevokedBy: <code>${revokedBy}</code>` : "")
+          );
+          if (revoked) setHtml(verifyResult2, `<span class="bad">✖ Not valid (revoked)</span>`);
+        }
+      } catch (e) {
+        setHtml(verifyResult2, `<span class="bad">${e.shortMessage || e.message || String(e)}</span>`);
+      }
+    });
+
+    document.getElementById("btnOpen2")?.addEventListener("click", async () => {
+      if (!lastCid) return alert("Verify a certificate first.");
+      openFirstWorking(lastCid);
+    });
+
+
+
+    // ========= Register (Owner/Issuer) =========
+    $("btnRegister")?.addEventListener("click", async () => {
+      setHtml(regResult, "");
+      try {
+        const hash = $("regHash")?.value?.trim();
+        const cid  = $("regCid")?.value?.trim();
+        if (!hash || hash.length !== 66 || !hash.startsWith("0x")) {
+          return alert("Hash must be bytes32 (0x + 64 hex)");
+        }
+        if (!cid || !cid.startsWith("ipfs://")) {
+          return alert("CID must start with ipfs://");
+        }
+        const c = await getWriteContract();
+        const tx = await c.registerCertificate(hash, cid);
+        setHtml(regResult, "Submitting tx: " + tx.hash);
+        const rcpt = await tx.wait();
+        setHtml(regResult, "✅ Registered in block " + rcpt.blockNumber);
+      } catch (e) {
+        setHtml(regResult, "❌ " + (e.shortMessage || e.message || String(e)));
+      }
+    });
+
+    // ========= Revoke (Owner/Issuer) =========
+    $("btnRevoke")?.addEventListener("click", async () => {
+      setHtml(revResult, "");
+      try {
+        const h = $("revHash")?.value?.trim();
+        if (!h || !h.startsWith("0x") || h.length !== 66) {
+          return alert("Enter a valid bytes32 (0x + 64 hex)");
+        }
+        const c = await getWriteContract();
+        const tx = await c.revokeCertificate(h);
+        setHtml(revResult, "Submitting tx: " + tx.hash);
+        const rcpt = await tx.wait();
+        setHtml(revResult, "✅ Revoked in block " + rcpt.blockNumber);
+      } catch (e) {
+        setHtml(revResult, "❌ " + (e.shortMessage || e.message || String(e)));
+      }
+    });
+
+    // ========= Re-issue (Owner/Issuer) =========
+    const reResult = document.getElementById("reResult");
+    document.getElementById("btnReissue")?.addEventListener("click", async () => {
+      reResult.textContent = "";
+      try {
+        const h = document.getElementById("reHash").value.trim();
+        const cid = document.getElementById("reCid").value.trim();
+        if (!/^0x[0-9a-fA-F]{64}$/.test(h)) return alert("Enter a valid bytes32 hash");
+        if (!cid.startsWith("ipfs://")) return alert("CID must start with ipfs://");
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const signer = await provider.getSigner();
+        const c = new ethers.Contract(CONTRACT_ADDRESS, abi, signer);
+        const tx = await c.reissueCertificate(h, cid);
+        reResult.textContent = "Submitting tx: " + tx.hash;
+        const rcpt = await tx.wait();
+        reResult.textContent = "✅ Reissued in block " + rcpt.blockNumber;
+      } catch (e) {
+        reResult.textContent = "❌ " + (e.shortMessage || e.message || String(e));
+      }
+    });
+
+
+    // ========= Optional: proof.json (if you added a button with id="btnProof1") =========
+    $("btnProof1")?.addEventListener("click", async () => {
+      try {
+        const h = (hashOut?.textContent || "").trim();
+        if (!h) return alert("Compute the hash first.");
+        const c = await getReadContract();
+        const [cid, ts, issuer, revoked, revokedAt, revokedBy] = await c.getCertificate(h);
+        const proof = {
+          network: "sepolia",
+          contract: CONTRACT_ADDRESS,
+          hash: h, cid, issuer,
+          timestamp: Number(ts),
+          revoked, revokedAt: Number(revokedAt), revokedBy
+        };
+        const blob = new Blob([JSON.stringify(proof, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `proof-${h.slice(2,10)}.json`; a.click();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        alert(e.message || String(e));
+      }
+    });
+
+    $("btnProof2")?.addEventListener("click", async () => {
+      try {
+        const h = ($("hashIn")?.value || "").trim();
+        if (!h || !h.startsWith("0x") || h.length !== 66) {
+          return alert("Enter a valid bytes32 (0x + 64 hex)");
+        }
+        const c = await getReadContract();
+        const [cid, ts, issuer, revoked, revokedAt, revokedBy] = await c.getCertificate(h);
+        const proof = {
+          network: "sepolia",
+          contract: CONTRACT_ADDRESS,
+          hash: h, cid, issuer,
+          timestamp: Number(ts),
+          revoked, revokedAt: Number(revokedAt), revokedBy
+        };
+        const blob = new Blob([JSON.stringify(proof, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url; a.download = `proof-${h.slice(2,10)}.json`; a.click();
+        URL.revokeObjectURL(url);
+      } catch (e) {
+        alert(e.message || String(e));
+      }
+    });
+
+    $("btnLoadEvents")?.addEventListener("click", async () => {
+      const out = document.getElementById("eventsList");
+      out.textContent = "Loading…";
+      try {
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const iface = new ethers.Interface(abi);
+
+        // Topic hashes from event signatures (works across ethers v6 variants)
+        const topicReg = ethers.id("CertificateRegistered(bytes32,string,address)");
+        const topicRev = ethers.id("CertificateRevoked(bytes32,address,uint256)");
+        const topicRei = ethers.id("CertificateReissued(bytes32,string,string,address)");
+
+        // Fetch a recent window (tweak span if needed)
+        const latest = await provider.getBlockNumber();
+        const from = Math.max(latest - 50_000, 0);
+
+        // Pull logs per-event
+        const [regs, revs, reis] = await Promise.all([
+          provider.getLogs({ address: CONTRACT_ADDRESS, topics: [topicReg], fromBlock: from, toBlock: latest }),
+          provider.getLogs({ address: CONTRACT_ADDRESS, topics: [topicRev], fromBlock: from, toBlock: latest }),
+          provider.getLogs({ address: CONTRACT_ADDRESS, topics: [topicRei], fromBlock: from, toBlock: latest }),
+        ]);
+
+        // Decode helper
+        const decode = (log) => {
+          try { return iface.parseLog(log); } catch { return null; }
+        };
+
+        // Normalize into a single array
+        const items = [];
+
+        for (const l of regs) {
+          const p = decode(l);
+          if (!p) continue;
+          const { hash, ipfsCid, issuer } = p.args;
+          items.push({
+            type: "REGISTER",
+            hash,
+            cid: ipfsCid,
+            actor: issuer,
+            block: l.blockNumber,
+            tx: l.transactionHash,
+          });
+        }
+
+        for (const l of revs) {
+          const p = decode(l);
+          if (!p) continue;
+          const { hash, revokedBy, revokedAt } = p.args;
+          items.push({
+            type: "REVOKE",
+            hash,
+            cid: "", // none in event
+            actor: revokedBy,
+            block: l.blockNumber,
+            tx: l.transactionHash,
+            extra: `revokedAt=${Number(revokedAt)}`
+          });
+        }
+
+        for (const l of reis) {
+          const p = decode(l);
+          if (!p) continue;
+          const { hash, oldCid, newCid, issuer } = p.args;
+          items.push({
+            type: "REISSUE",
+            hash,
+            cid: newCid,
+            actor: issuer,
+            block: l.blockNumber,
+            tx: l.transactionHash,
+            extra: `oldCid=${oldCid}`
+          });
+        }
+
+        // Sort newest first
+        items.sort((a, b) => b.block - a.block);
+
+        if (items.length === 0) {
+          out.textContent = "No events in the last 50k blocks.";
+          return;
+        }
+
+        // Render a compact table with Etherscan links
+        const rows = items.map(it => {
+          const txUrl = `https://sepolia.etherscan.io/tx/${it.tx}`;
+          const cidLink = it.cid ? `<a href="https://ipfs.io/ipfs/${it.cid.replace(/^ipfs:\/\//,'')}" target="_blank">open</a>` : "";
+          const extra = it.extra ? ` | ${it.extra}` : "";
+          return `${it.type.padEnd(8)} | hash=${it.hash} | block=${it.block} | tx=<a href="${txUrl}" target="_blank">${it.tx.slice(0,10)}…</a> | by=${it.actor}${it.cid ? ` | cid=${it.cid}` : ""} ${cidLink ? `(${cidLink})` : ""}${extra}`;
+        });
+
+        out.innerHTML = rows.join("<br><br>");
+      } catch (e) {
+        out.textContent = "Error: " + (e.shortMessage || e.message || String(e));
+      }
+    });
+
+
+    // ========= Manage issuers (owner) =========
+    $("btnSetIssuer")?.addEventListener("click", async () => {
+      const res = document.getElementById("issuerResult");
+      res.textContent = "";
+      try {
+        const addr = document.getElementById("issuerAddr").value.trim();
+        const flag = document.getElementById("issuerFlag").value === "true";
+        if (!/^0x[0-9a-fA-F]{40}$/.test(addr)) return alert("Enter a valid 0x address");
+        const provider = new ethers.BrowserProvider(window.ethereum);
+        const signer = await provider.getSigner();
+        const c = new ethers.Contract(CONTRACT_ADDRESS, abi, signer);
+        const tx = await c.setIssuer(addr, flag);
+        res.textContent = "Tx: " + tx.hash;
+        const rcpt = await tx.wait();
+        res.textContent = `✅ ${flag ? "Authorized" : "Removed"} issuer ${addr} in block ${rcpt.blockNumber}`;
+      } catch (e) {
+        res.textContent = "❌ " + (e.shortMessage || e.message);
+      }
+    });
+
+
+
+    // Show which address the UI is using (debug)
+    document.body.insertAdjacentHTML(
+      "afterbegin",
+      `<div style="font:12px monospace;margin:8px 0;color:#555">Using contract: ${CONTRACT_ADDRESS}</div>`
+    );
+  </script>
+
+</body>
+</html>
